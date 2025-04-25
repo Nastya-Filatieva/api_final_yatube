@@ -5,43 +5,47 @@ from rest_framework.filters import SearchFilter
 from posts.models import Follow, Group, Post, User
 from .permissions import OwnerOrReadOnly
 from .serializers import (CommentSerializer, FollowSerializer, GroupSerializer,
-                          PostSerializer, UserSerializer)
+                          PostSerializer)
 
 
 class GroupViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Group.objects.all()
     serializer_class = GroupSerializer
+    permission_classes = (permissions.AllowAny,)
 
 
 class PostViewSet(viewsets.ModelViewSet):
     queryset = Post.objects.all()
     serializer_class = PostSerializer
-    permission_classes = (OwnerOrReadOnly,)
+    permission_classes = (permissions.IsAuthenticatedOrReadOnly,
+                          OwnerOrReadOnly,)
     pagination_class = pagination.LimitOffsetPagination
 
     def perform_create(self, serializer):
         serializer.save(author=self.request.user)
 
-
-class UserViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = User.objects.all()
-    serializer_class = UserSerializer
+    def perform_update(self, serializer):
+        return super().perform_update(serializer)
 
 
 class CommentViewSet(viewsets.ModelViewSet):
     serializer_class = CommentSerializer
-    permission_classes = (OwnerOrReadOnly,)
-
-    def perform_create(self, serializer):
-        serializer.save(author=self.request.user)
+    permission_classes = (permissions.IsAuthenticatedOrReadOnly,
+                          OwnerOrReadOnly,)
 
     def get_post(self):
-        return get_object_or_404(
-            Post, pk=self.kwargs.get('post_id')
-        )
+        post = get_object_or_404(Post, id=self.kwargs.get('post_id'))
+        return post
+
+    def perform_create(self, serializer):
+        author = self.request.user
+        post = self.get_post()
+        serializer.save(author=author, post=post)
 
     def get_queryset(self):
-        return self.get_post().comments
+        post = self.get_post()
+        queryset = post.comments.select_related('author')
+        return queryset
 
 
 class FollowViewSet(mixins.CreateModelMixin,
