@@ -1,67 +1,105 @@
-from django.shortcuts import get_object_or_404
-from rest_framework import pagination, permissions, viewsets, mixins
-from rest_framework.filters import SearchFilter
-
-from posts.models import Follow, Group, Post
-from .permissions import OwnerOrReadOnly
-from .serializers import (CommentSerializer, FollowSerializer, GroupSerializer,
-                          PostSerializer)
-
-
-class GroupViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Group.objects.all()
-    serializer_class = GroupSerializer
-    permission_classes = (permissions.AllowAny,)
+from rest_framework import viewsets
+from posts.models import Post, Comment, Group, Follow, User
+from .serializers import (
+    PostSerializer,
+    CommentSerializer,
+    GroupSerializer,
+    FollowSerializer
+)
+from rest_framework.exceptions import (
+    PermissionDenied,
+    MethodNotAllowed,
+    ValidationError
+)
+from rest_framework import permissions
+from rest_framework.pagination import LimitOffsetPagination
+from rest_framework import filters
 
 
 class PostViewSet(viewsets.ModelViewSet):
     queryset = Post.objects.all()
     serializer_class = PostSerializer
-    permission_classes = (permissions.IsAuthenticatedOrReadOnly,
-                          OwnerOrReadOnly,)
-    pagination_class = pagination.LimitOffsetPagination
+    permission_classes = (permissions.IsAuthenticatedOrReadOnly,)
+    pagination_class = LimitOffsetPagination
 
     def perform_create(self, serializer):
         serializer.save(author=self.request.user)
 
+    def perform_destroy(self, instance):
+        if instance.author != self.request.user:
+            raise PermissionDenied()
+        return super().perform_destroy(instance)
+
     def perform_update(self, serializer):
+        if serializer.instance.author != self.request.user:
+            raise PermissionDenied()
         return super().perform_update(serializer)
 
 
 class CommentViewSet(viewsets.ModelViewSet):
+    queryset = Comment.objects.all()
     serializer_class = CommentSerializer
-    permission_classes = (permissions.IsAuthenticatedOrReadOnly,
-                          OwnerOrReadOnly,)
-
-    def get_post(self):
-        post = get_object_or_404(Post, id=self.kwargs.get('post_id'))
-        return post
+    permission_classes = (permissions.IsAuthenticatedOrReadOnly,)
 
     def perform_create(self, serializer):
-        author = self.request.user
-        post = self.get_post()
-        serializer.save(author=author, post=post)
+        serializer.save(
+            author=self.request.user,
+            post=Post.objects.get(pk=self.kwargs['post_id'])
+        )
 
     def get_queryset(self):
-        post = self.get_post()
-        queryset = post.comments.select_related('author')
-        return queryset
+        return Comment.objects.filter(
+            post=Post.objects.get(pk=self.kwargs['post_id'])
+        )
+
+    def perform_destroy(self, instance):
+        if instance.author != self.request.user:
+            raise PermissionDenied()
+        return super().perform_destroy(instance)
+
+    def perform_update(self, serializer):
+        if serializer.instance.author == self.request.user:
+            serializer.save(author=self.request.user)
+            return
+        return super().perform_update(serializer)
 
 
-class FollowViewSet(mixins.CreateModelMixin,
-                    mixins.ListModelMixin,
-                    viewsets.GenericViewSet):
+class GroupViewSet(viewsets.ModelViewSet):
+    queryset = Group.objects.all()
+    serializer_class = GroupSerializer
+    permission_classes = (permissions.IsAuthenticatedOrReadOnly,)
+
+    def create(self, request, *args, **kwargs):
+        raise MethodNotAllowed(method="POST", code=405)
+
+
+class FollowViewSet(viewsets.ModelViewSet):
     queryset = Follow.objects.all()
     serializer_class = FollowSerializer
-    pagination_class = pagination.LimitOffsetPagination
     permission_classes = (permissions.IsAuthenticated,)
-    filter_backends = (SearchFilter,)
-    search_fields = ('following__username', 'user__username',)
+    filter_backends = (filters.SearchFilter,)
+    search_fields = ('following__username',)
 
     def get_queryset(self):
-        """Возвращает все подписки пользователя, сделавшего запрос"""
-        new_queryset = Follow.objects.filter(user=self.request.user)
-        return new_queryset
+        return Follow.objects.filter(user=self.request.user)
 
     def perform_create(self, serializer):
-        return serializer.save(user=self.request.user)
+        if not self.request.data.get('following'):
+            raise ValidationError()
+        if Follow.objects.filter(
+            user=self.request.user,
+            following=User.objects.get(
+                username=self.request.data.get('following')
+            )
+        ):
+            raise ValidationError()
+        if self.request.user == User.objects.get(
+            username=self.request.data.get('following')
+        ):
+            raise ValidationError()
+        serializer.save(
+            user=self.request.user,
+            following=User.objects.get(
+                username=self.request.data.get('following')
+            )
+        )
